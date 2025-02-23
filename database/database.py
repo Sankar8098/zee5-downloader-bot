@@ -1,9 +1,6 @@
 import os
 import threading
-
-from sqlalchemy import create_engine, Column, Integer
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, scoped_session
+from pymongo import MongoClient
 
 # Load configuration
 if bool(os.environ.get("WEBHOOK", False)):
@@ -11,71 +8,34 @@ if bool(os.environ.get("WEBHOOK", False)):
 else:
     from config import Config
 
-# Initialize SQLAlchemy
-BASE = declarative_base()
-
-def start() -> scoped_session:
-    # Create the database engine
-    engine = create_engine(Config.DB_URI, client_encoding="utf8")
-    # Bind the metadata to the engine
-    BASE.metadata.bind = engine
-    # Create all tables if they don't exist
-    BASE.metadata.create_all(engine)
-    # Return a scoped session
-    return scoped_session(sessionmaker(bind=engine, autoflush=False))
-
-# Create a global session object
-SESSION = start()
+# Initialize MongoDB
+client = MongoClient(Config.DB_URI)
+db = client['your_database_name']
+collection = db['thumbnail']
 
 # Threading lock for thread-safe operations
 INSERTION_LOCK = threading.RLock()
-
-# Define the Thumbnail table
-class Thumbnail(BASE):
-    __tablename__ = "thumbnail"
-    id = Column(Integer, primary_key=True)
-    msg_id = Column(Integer)
-
-    def __init__(self, id, msg_id):
-        self.id = id
-        self.msg_id = msg_id
-
-# Create the table if it doesn't exist
-Thumbnail.__table__.create(checkfirst=True)
 
 # Function to add or update a thumbnail
 async def df_thumb(id, msg_id):
     with INSERTION_LOCK:
         # Check if the thumbnail already exists
-        msg = SESSION.query(Thumbnail).get(id)
-        if not msg:
+        thumb_data = collection.find_one({"id": id})
+        if not thumb_data:
             # If it doesn't exist, create a new entry
-            msg = Thumbnail(id, msg_id)
-            SESSION.add(msg)
-            SESSION.flush()
+            collection.insert_one({"id": id, "msg_id": msg_id})
         else:
             # If it exists, delete the old entry and add a new one
-            SESSION.delete(msg)
-            file = Thumbnail(id, msg_id)
-            SESSION.add(file)
-        # Commit the changes
-        SESSION.commit()
+            collection.delete_one({"id": id})
+            collection.insert_one({"id": id, "msg_id": msg_id})
 
 # Function to delete a thumbnail
 async def del_thumb(id):
     with INSERTION_LOCK:
-        # Find and delete the thumbnail
-        msg = SESSION.query(Thumbnail).get(id)
-        if msg:
-            SESSION.delete(msg)
-            SESSION.commit()
+        # Delete the thumbnail by ID
+        collection.delete_one({"id": id})
 
 # Function to fetch a thumbnail
 async def thumb(id):
-    try:
-        # Fetch the thumbnail by ID
-        t = SESSION.query(Thumbnail).get(id)
-        return t
-    finally:
-        # Close the session
-        SESSION.close()
+    # Fetch the thumbnail by ID
+    return collection.find_one({"id": id})
